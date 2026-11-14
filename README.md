@@ -1,3 +1,3 @@
 <p align="center">
-  <img src="./donut.svg" alt="Spinning ASCII donut"/>
+  <img src="./penrose.svg" alt="ASCII impossible triangle"/>
 </p>
