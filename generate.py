@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import math
+import os
+import random
+from datetime import date, datetime, timezone
 from html import escape
 
 CELL_W, CELL_H = 7.2, 14
@@ -38,7 +41,7 @@ def grid_to_runs(grid: Grid):
     return "".join(out)
 
 
-def flipbook(frames: list[Grid], fps, css):
+def flipbook(frames: list[Grid], fps, css, under=""):
     rows, cols = len(frames[0]), len(frames[0][0])
     w, h = int(cols * CELL_W + 2 * PAD), int(rows * CELL_H + 2 * PAD)
     n, dt = len(frames), 1 / fps
@@ -47,7 +50,7 @@ def flipbook(frames: list[Grid], fps, css):
                    for i, g in enumerate(frames))
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
             f'viewBox="0 0 {w} {h}">\n<style>{style}</style>\n'
-            f'<rect width="100%" height="100%" rx="8" fill="#0d1117"/>\n{body}</svg>\n')
+            f'<rect width="100%" height="100%" rx="8" fill="#0d1117"/>\n{under}{body}</svg>\n')
 
 
 def donut_svg(cols=46, rows=24, n_frames=90, fps=15):
@@ -312,11 +315,129 @@ def lorenz_svg(cols=60, rows=26, n_frames=150, fps=15, trail=260):
     return flipbook(frames, fps, SHADE_CSS)
 
 
+ROTATION = ["donut", "trefoil", "penrose", "lorenz"]
+MEM_TOTAL = 64216.3
+MEM_CACHE = 18342.7
+SCENE_PID = 30482
+
+SCENE_PROCS = {
+    "donut": (24.0, 212304, 24760),
+    "trefoil": (27.0, 241880, 30112),
+    "penrose": (18.0, 198552, 19004),
+    "lorenz": (31.0, 286412, 41236),
+}
+
+PROCS = [
+    (1, "systemd", "root", "S", 0.1, 21856, 12988, "boot"),
+    (2, "kthreadd", "root", "S", 0.0, 0, 0, "kernel"),
+    (15, "rcu_preempt", "root", "I", 0.1, 0, 0, "kernel"),
+    (412, "systemd-journald", "root", "S", 0.1, 56220, 21544, "boot"),
+    (447, "systemd-udevd", "root", "S", 0.0, 33108, 9876, "boot"),
+    (812, "dbus-daemon", "messagebus", "S", 0.1, 9932, 5312, "boot"),
+    (820, "systemd-logind", "root", "S", 0.0, 17204, 8140, "boot"),
+    (833, "nsncd", "nscd", "S", 0.0, 300472, 4980, "boot"),
+    (846, "cron", "root", "S", 0.0, 6824, 2860, "boot"),
+    (1021, "sshd", "root", "S", 0.0, 12544, 8812, "boot"),
+    (1037, "nix-daemon", "root", "S", 0.3, 331944, 23540, "boot"),
+    (1102, "containerd", "root", "S", 0.2, 1874220, 48772, "boot"),
+    (30117, "zsh", "mahoney", "S", 0.0, 12460, 6012, "session"),
+    (30511, "top", "mahoney", "R", 0.6, 10812, 4120, "session"),
+    (31244, "kworker/0:2", "root", "I", 0.1, 0, 0, "session"),
+]
+
+
+def todays_scene():
+    return ROTATION[datetime.now(timezone.utc).timetuple().tm_yday % len(ROTATION)]
+
+
+def top_row(pid, user, pr, ni, virt, res, shr, st, cpu, mem, time, cmd):
+    return f"{pid:>7} {user:<8} {pr:>3} {ni:>3} {virt:>7} {res:>6} {shr:>6} {st} {cpu:>5} {mem:>5} {time:>9} {cmd}"
+
+
+def top_time(t):
+    m, s = divmod(t, 60)
+    return f"{int(m)}:{s:05.2f}" if m < 1000 else f"{int(m)}:{int(s):02d}"
+
+
+def top_svg(cols=90, rows=23, n_frames=10, delay=3.0, seed=11, cores=4, hz=100):
+    rng = random.Random(seed)
+    now = datetime.now(timezone.utc)
+    born = date.fromisoformat(os.environ.get("BIRTH_DATE", "2000-03-26"))
+    days = (now.date() - born).days
+    scene = os.environ.get("SCENE") or todays_scene()
+    table = [(SCENE_PID, scene, "mahoney", "R", *SCENE_PROCS[scene], "scene")] + PROCS
+
+    cpu_time = {}
+    for pid, name, _, _, cpu, _, _, kind in table:
+        if kind == "boot":
+            cpu_time[pid] = days * 86400 * (cpu + 0.02) / 100 * 0.3 * rng.uniform(0.2, 1.8)
+        elif kind == "kernel":
+            cpu_time[pid] = days * 86400 * (cpu + 0.0002) / 100 * 0.3 * rng.uniform(0.2, 1.8)
+        elif kind == "scene":
+            cpu_time[pid] = rng.uniform(20, 80) * 60
+        else:
+            cpu_time[pid] = rng.uniform(1, 200)
+    base_load = SCENE_PROCS[scene][0] / 100 + 0.04
+    head = top_row("PID", "USER", "PR", "NI", "VIRT", "RES", "SHR", "S", "%CPU", "%MEM", "TIME+", "COMMAND")
+
+    frames = []
+    clock = now.hour * 3600 + now.minute * 60 + now.second
+    for _ in range(n_frames):
+        procs, busy = [], 0
+        for pid, name, user, st, cpu, virt, res, _ in table:
+            expected = cpu * delay * rng.uniform(0.75, 1.25)
+            ticks = int(expected) + (rng.random() < expected % 1)
+            busy += ticks
+            cpu_time[pid] += ticks / hz
+            procs.append((ticks / delay, pid, name, user, st, virt, res))
+        procs.sort(key=lambda q: (-q[0], q[1]))
+        total = 100 * busy / (delay * hz * cores)
+        us, sy = round(total * 0.85, 1), round(total * 0.15, 1)
+        load = (base_load + rng.uniform(-0.06, 0.06), base_load + 0.03, base_load + 0.01)
+        used = 4871.6 + rng.uniform(-6, 6)
+        hh, mm, ss = clock // 3600 % 24, clock // 60 % 60, clock % 60
+        lines = [
+            (f"top - {hh:02d}:{mm:02d}:{ss:02d} up {days} day{'' if days == 1 else 's'}, {hh:2d}:{mm:02d},  1 user,  "
+             f"load average: {load[0]:.2f}, {load[1]:.2f}, {load[2]:.2f}", "h"),
+            ("Tasks: 112 total,   2 running, 110 sleeping,   0 stopped,   0 zombie", "h"),
+            (f"%Cpu(s): {us:4.1f} us, {sy:4.1f} sy,  0.0 ni, {100 - us - sy - 0.1:4.1f} id,  "
+             "0.0 wa,  0.0 hi,  0.1 si,  0.0 st", "h"),
+            (f"MiB Mem : {MEM_TOTAL:9.1f} total, {MEM_TOTAL - used - MEM_CACHE:9.1f} free, "
+             f"{used:9.1f} used, {MEM_CACHE:9.1f} buff/cache", "h"),
+            (f"MiB Swap: {0.0:9.1f} total, {0.0:9.1f} free, {0.0:9.1f} used. "
+             f"{MEM_TOTAL - used - 1240:9.1f} avail Mem", "h"),
+            ("", "h"),
+            (head.ljust(cols), "th"),
+        ]
+        for c, pid, name, user, st, virt, res in procs[:rows - len(lines)]:
+            mem = 100 * res / (MEM_TOTAL * 1024)
+            row = top_row(pid, user if len(user) <= 8 else user[:7] + "+", 20, 0, virt, res, int(res * 0.42),
+                          st, f"{c:.1f}", f"{mem:.1f}", top_time(cpu_time[pid]), name)
+            if len(row) > cols:
+                row = row[:cols - 1] + "+"
+            lines.append((row, "o"))
+
+        grid = blank(cols, rows)
+        for r, (text, cls) in enumerate(lines):
+            for c, ch in enumerate(text[:cols]):
+                grid[r][c] = (ch, cls)
+        frames.append(grid)
+        clock += int(delay)
+
+    y = PAD + 6 * CELL_H + 1
+    under = f'<rect x="{PAD}" y="{y:.1f}" width="{cols * CELL_W:.1f}" height="{CELL_H}" fill="#c9d1d9"/>\n'
+    css = """
+  .h { fill: #c9d1d9; } .th { fill: #0d1117; } .o { fill: #8b949e; }
+"""
+    return flipbook(frames, 1 / delay, css, under)
+
+
 SCENES = {
     "donut": donut_svg,
     "trefoil": trefoil_svg,
     "penrose": penrose_svg,
     "lorenz": lorenz_svg,
+    "top": top_svg,
 }
 
 

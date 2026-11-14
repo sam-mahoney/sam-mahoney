@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
   push:
     branches: [master]
-    paths: ["*.svg", ".github/workflows/rotate.yml"]
+    paths: ["*.svg", "generate.py", ".github/workflows/rotate.yml"]
 
 permissions:
   contents: write
@@ -19,17 +19,20 @@ jobs:
   rotate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Pick today's animation
         run: |
-          scenes=(donut trefoil penrose lorenz)
-          day=$((10#$(date -u +%j)))
-          pick=${scenes[$((day % ${#scenes[@]}))]}
+          pick=$(python3 -c "import generate; print(generate.todays_scene())")
           echo "Today's animation: $pick"
           mkdir dist
           cp "$pick.svg" dist/current.svg
           echo "PICK=$pick" >> "$GITHUB_ENV"
+
+      - name: Build top with today's uptime
+        run: |
+          SCENE=$PICK python3 generate.py top
+          cp top.svg dist/top.svg
 
       - name: Publish to output branch
         working-directory: dist
@@ -37,6 +40,6 @@ jobs:
           git init -q -b output
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add current.svg
+          git add current.svg top.svg
           git commit -q -m "Show $PICK"
           git push -q --force "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" output
